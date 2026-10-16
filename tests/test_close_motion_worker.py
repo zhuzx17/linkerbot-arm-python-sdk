@@ -226,9 +226,14 @@ def test_two_real_sigints_defer_bus_close_until_worker_restoration(variant):
         print(json.dumps([events, original_error, arm._resources_closed]))
     """)
     result = subprocess.run(
-        [sys.executable, "-c", program, variant], capture_output=True, text=True, timeout=10
+        [sys.executable, "-c", program, variant],
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [
-        [["restore", False], ["bus_closed", True]], "KeyboardInterrupt", True
+        [["restore", False], ["bus_closed", True]],
+        "KeyboardInterrupt",
+        True,
     ]

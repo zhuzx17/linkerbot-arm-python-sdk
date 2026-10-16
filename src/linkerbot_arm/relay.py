@@ -51,7 +51,9 @@ class DataRelay(Generic[T]):
             raise ValidationError("send must be callable")
         self._validate_timeout(timeout_s)
         deadline = time.monotonic() + timeout_s
-        if not self._request_lock.acquire(timeout=min(timeout_s, threading.TIMEOUT_MAX)):
+        if not self._request_lock.acquire(
+            timeout=min(timeout_s, threading.TIMEOUT_MAX)
+        ):
             raise TimeoutError(
                 f"Request ownership not available within {timeout_s * 1000:.0f}ms"
             )

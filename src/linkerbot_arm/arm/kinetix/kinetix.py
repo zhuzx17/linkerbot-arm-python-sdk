@@ -90,9 +90,7 @@ class ArmKinetix:
 
     def set_joint_limits(self, limits: list[tuple[float, float]]) -> None:
         if len(limits) != self._model.nq:
-            raise ValueError(
-                f"Expected {self._model.nq} limits, got {len(limits)}"
-            )
+            raise ValueError(f"Expected {self._model.nq} limits, got {len(limits)}")
         validated = []
         for lower, upper in limits:
             try:
@@ -577,12 +575,17 @@ class ArmKinetix:
             ("angular_acceleration", angular_acceleration),
         ):
             try:
-                valid = not isinstance(value, bool) and math.isfinite(value) and value > 0
+                valid = (
+                    not isinstance(value, bool) and math.isfinite(value) and value > 0
+                )
             except (TypeError, ValueError, OverflowError) as error:
                 raise ValidationError(f"{name} must be finite and positive") from error
             if not valid:
                 raise ValidationError(f"{name} must be finite and positive")
-        for name, pose in (("current_pose", current_pose), ("target_pose", target_pose)):
+        for name, pose in (
+            ("current_pose", current_pose),
+            ("target_pose", target_pose),
+        ):
             try:
                 valid = all(math.isfinite(value) for value in pose.to_list())
             except (TypeError, ValueError, OverflowError) as error:
@@ -636,7 +639,9 @@ class ArmKinetix:
         while True:
             next_t = t + waypoint_interval
             if next_t <= t:
-                raise ValidationError("waypoint_interval is too small to advance planning time")
+                raise ValidationError(
+                    "waypoint_interval is too small to advance planning time"
+                )
             t = next_t
             if t >= T:
                 break
