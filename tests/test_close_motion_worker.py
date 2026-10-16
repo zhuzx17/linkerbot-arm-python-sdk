@@ -145,10 +145,14 @@ def test_repeated_interrupts_preserve_first_exception_until_cleanup(kind, monkey
 
 
 @pytest.mark.parametrize("variant", ["shared", "h75"])
-def test_two_real_sigints_defer_bus_close_until_worker_restoration(variant):
-    # Isolate real process signals from pytest and exercise the actual blocking
-    # Event.wait path; mocked exceptions alone do not verify SIGINT behavior.
+@pytest.mark.parametrize("interrupt_source", ["native", "pending"])
+def test_two_real_sigints_defer_bus_close_until_worker_restoration(
+    variant, interrupt_source
+):
+    # Exercise native control events and pending Python interrupts in a child;
+    # mocked exceptions alone do not verify the blocking Event.wait path.
     program = textwrap.dedent("""
+        import _thread
         import json
         import os
         import signal
@@ -159,6 +163,7 @@ def test_two_real_sigints_defer_bus_close_until_worker_restoration(variant):
         from linkerbot_arm._transport import close_arm
         from linkerbot_arm.motion_timer import MotionTimer
 
+        signal.signal(signal.SIGINT, signal.default_int_handler)
         timer = MotionTimer()
         entered, release = threading.Event(), threading.Event()
         first, second, continuation = (
@@ -168,6 +173,15 @@ def test_two_real_sigints_defer_bus_close_until_worker_restoration(variant):
         count = [0]
         original_wait = timer._wait_worker_done
         original_error = None
+
+        def send_interrupt():
+            if sys.argv[2] == 'pending':
+                _thread.interrupt_main()
+            elif sys.platform == 'win32':
+                # This child has its own console, so Ctrl+C cannot reach pytest.
+                os.kill(0, signal.CTRL_C_EVENT)
+            else:
+                os.kill(os.getpid(), signal.SIGINT)
 
         def stop_bus():
             events.append(['bus_closed', timer._worker_done.is_set()])
@@ -200,9 +214,9 @@ def test_two_real_sigints_defer_bus_close_until_worker_restoration(variant):
 
         def interrupt():
             assert first.wait(2)
-            os.kill(os.getpid(), signal.SIGINT)
+            send_interrupt()
             assert second.wait(2)
-            os.kill(os.getpid(), signal.SIGINT)
+            send_interrupt()
             assert continuation.wait(2)
             release.set()
 
@@ -225,11 +239,23 @@ def test_two_real_sigints_defer_bus_close_until_worker_restoration(variant):
         assert not motion.is_alive() and not signaller.is_alive()
         print(json.dumps([events, original_error, arm._resources_closed]))
     """)
+    options = {}
+    if sys.platform == "win32":
+        # A separate console isolates real control events from the runner and
+        # enables Ctrl+C even when pytest itself has no attached console.
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = subprocess.SW_HIDE
+        options = {
+            "creationflags": subprocess.CREATE_NEW_CONSOLE,
+            "startupinfo": startup,
+        }
     result = subprocess.run(
-        [sys.executable, "-c", program, variant],
+        [sys.executable, "-c", program, variant, interrupt_source],
         capture_output=True,
         text=True,
         timeout=10,
+        **options,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [
