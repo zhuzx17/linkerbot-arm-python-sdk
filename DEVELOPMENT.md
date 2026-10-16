@@ -55,7 +55,7 @@ Linux 使用 PyPI 的 `[kinetix]` 依赖；Windows 沿用安装文档的 Conda �
 
 CAN FD 兼容测试显式选择 Linux/Windows ABI，在两种主机上都覆盖参数、错误转换、
 并发关闭和失败重试；Linux `LibCANbus_Init/Exit` 用例使用 Linux fake。
-真实中断测试在 Linux 发送 SIGINT，在 Windows 新建独立控制台发送 Ctrl+C，
+真实中断测试在 Linux 发送 SIGINT，在 Windows 新建独立控制台、显式启用 Ctrl+C 接收后发送事件，
 并验证重复中断时先完成工作线程恢复再关闭总线；另用待处理 Python 中断覆盖阻塞等待。
 工作线程清理采用有限等待片段，让挂起的中断有机会执行，等待超时本身不表示清理完成。
 两条 CAN 发送路径用 `perf_counter` 计算短间隔，测试保持原间隔门限，并用粗粒度

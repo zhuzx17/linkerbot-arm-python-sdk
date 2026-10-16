@@ -164,6 +164,15 @@ def test_two_real_sigints_defer_bus_close_until_worker_restoration(
         from linkerbot_arm.motion_timer import MotionTimer
 
         signal.signal(signal.SIGINT, signal.default_int_handler)
+        if sys.platform == 'win32' and sys.argv[2] == 'native':
+            import ctypes
+            # Runners can pass down an ignored Ctrl+C attribute. Installing a
+            # Python handler does not clear that Win32 console attribute.
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            kernel32.SetConsoleCtrlHandler.restype = ctypes.c_int
+            if not kernel32.SetConsoleCtrlHandler(None, False):
+                raise ctypes.WinError(ctypes.get_last_error())
         timer = MotionTimer()
         entered, release = threading.Event(), threading.Event()
         first, second, continuation = (
@@ -242,7 +251,7 @@ def test_two_real_sigints_defer_bus_close_until_worker_restoration(
     options = {}
     if sys.platform == "win32":
         # A separate console isolates real control events from the runner and
-        # enables Ctrl+C even when pytest itself has no attached console.
+        # supplies a console even when pytest itself has none attached.
         startup = subprocess.STARTUPINFO()
         startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startup.wShowWindow = subprocess.SW_HIDE
