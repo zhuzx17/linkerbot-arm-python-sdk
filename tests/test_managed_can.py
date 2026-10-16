@@ -134,7 +134,7 @@ def test_fifo_order_and_legacy_successful_send_spacing(connection):
     original = backend.send_now
 
     def record(message):
-        times.append(time.monotonic())
+        times.append(time.perf_counter())
         original(message)
 
     backend.send_now = record
@@ -143,7 +143,12 @@ def test_fifo_order_and_legacy_successful_send_spacing(connection):
         assert adapter.send(message) is None
     wait_until(lambda: len(backend.sent) == len(messages))
     assert backend.sent == messages
-    assert all(b - a >= adapter.SEND_INTERVAL_S * 0.8 for a, b in zip(times, times[1:]))
+    intervals = [b - a for a, b in zip(times, times[1:])]
+    minimum = adapter.SEND_INTERVAL_S * 0.8
+    assert all(interval >= minimum for interval in intervals), {
+        "intervals_s": intervals,
+        "minimum_s": minimum,
+    }
 
 
 def test_rx_disconnect_reports_once_cleans_connection_and_rejects_more_commands(

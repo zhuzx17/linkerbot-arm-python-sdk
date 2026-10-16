@@ -174,7 +174,7 @@ class ManagedCANDispatcher(TargetQueueMixin):
             raise RuntimeError("CAN dispatcher is stopped")
 
     def _dispatch(self, message):
-        deadline = time.monotonic() + self.SEND_INTERVAL_S
+        deadline = time.perf_counter() + self.SEND_INTERVAL_S
         with self._lock:
             self._require_running()
         receipt = self._transport.send(message)
@@ -190,7 +190,7 @@ class ManagedCANDispatcher(TargetQueueMixin):
                 self._fault(error)
             raise
         # Preserve the original successful-send pacing without blocking callers.
-        self._stopped.wait(max(0.0, deadline - time.monotonic()))
+        self._stopped.wait(max(0.0, deadline - time.perf_counter()))
         return receipt
 
     def _fault(self, error: Exception) -> None:
