@@ -40,12 +40,18 @@ CI 使用 `tools/check_installed.py` 检查该项，并确认 `py.typed` 与许�
 
 ## GitHub CI
 
-PR 与 `main` 更新执行 Ruff lint/format、ShellCheck、actionlint，以及 Linux 上的
+PR 与 `main` 更新执行 Ruff lint/format、ShellCheck、actionlint，以及 Linux/Windows 上的
 Python 3.10、3.13 离线测试；每周补测 3.11、3.12。测试安装真实 Pinocchio 并检查导入，
 沿用现有配置排除 `hardware` 和 `interactive` 用例。独立打包任务构建 sdist、wheel，
 在源码目录之外验证 wheel 和八个 URDF。每周及手动运行还会使用当前 SDK 测试最新
 ROS2 wrapper 的 Humble/Jazzy Docker 环境。Transport 从 GitHub `main` 安装，
 日志记录实际源码提交，不访问 Gitea。
+
+Linux 使用 PyPI 的 `[kinetix]` 依赖；Windows 沿用安装文档的 Conda 路线，
+通过 micromamba 创建独立环境，安装 Conda Forge `pinocchio=4.1.0` 和基础 SDK 的
+`[test]` 依赖，不混装没有 Windows wheel 的 PyPI `pin`。两平台执行相同的完整离线
+测试选择并保存 JUnit/覆盖率，记录实际数值库版本；不额外跳过 Windows 失败用例。
+这不代表厂商 Windows 驱动、真实 CAN 或机械臂动作已经验证。
 
 复现 CI 工具和报告配置（先按安装文档准备 Transport）：
 

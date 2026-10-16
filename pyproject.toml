@@ -19,8 +19,8 @@ dependencies = [
 # This extra installs PyPI Pinocchio; it does not enable/disable kinematics.
 # Compatible system/Conda/ROS APT Pinocchio can instead be used with the base SDK.
 kinetix = ["pin>=4.1.0"]
-test = ["pytest>=7.4,<9", "pytest-timeout>=2.3"]
-dev = ["ruff==0.16.3", "build>=1.2"]
+test = ["pytest>=8.4,<10", "pytest-timeout>=2.3"]
+dev = ["ruff==0.17.1", "build>=1.2"]
 
 [build-system]
 requires = ["setuptools>=77", "wheel"]

@@ -44,10 +44,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Create isolated Python environment
@@ -58,9 +58,9 @@ jobs:
           else
             echo "$RUNNER_TEMP/ci-venv/bin" >> "$GITHUB_PATH"
           fi
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.23.9"
+          go-version: "1.27.2"
           cache: false
       - run: python -m pip install -r requirements/ci-lint.txt
       - run: ruff check .
@@ -69,7 +69,7 @@ jobs:
         run: git ls-files -z -- '*.sh' | xargs -0 -r shellcheck --severity=warning
       - name: actionlint
         run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           actionlint
 
   test:
@@ -82,16 +82,16 @@ jobs:
         os: [ubuntu-24.04]
         python: ${{ (github.event_name == 'schedule' || inputs.full_matrix) && fromJSON('["3.10", "3.11", "3.12", "3.13"]') || fromJSON('["3.10", "3.13"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
           path: .ci/transport
           ref: ${{ env.CI_DEPENDENCY_REF }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: Create isolated Python environment
@@ -118,10 +118,63 @@ jobs:
           python -m pytest -p pytest_timeout -p pytest_cov.plugin --timeout=60
           --cov=linkerbot_arm --cov-report=term-missing:skip-covered
           --cov-report=xml:reports/coverage.xml --junitxml=reports/pytest.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: tests-${{ matrix.os }}-py${{ matrix.python }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+  test-windows:
+    name: Test (windows-latest, Python ${{ matrix.python }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ (github.event_name == 'schedule' || inputs.full_matrix) && fromJSON('["3.10", "3.11", "3.12", "3.13"]') || fromJSON('["3.10", "3.13"]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
+          path: .ci/transport
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: arm-ci
+          create-args: >-
+            python=${{ matrix.python }}
+            pinocchio=4.1.0
+            scipy
+            pip
+          init-shell: none
+          generate-run-shell: false
+          post-cleanup: all
+      - name: Record source revisions and Windows environment
+        run: |
+          git rev-parse HEAD
+          git -C .ci/transport rev-parse HEAD
+          micromamba list -n arm-ci
+      - name: Install test subject and dependencies
+        run: |
+          micromamba run -n arm-ci python -m pip install -r requirements/ci-test.txt
+          micromamba run -n arm-ci python -m pip install ".ci/transport[all]" ".[test]"
+          micromamba run -n arm-ci python -m pip check
+          micromamba run -n arm-ci python -c "import sys, pinocchio; print(sys.version); print(pinocchio.__version__, pinocchio.__file__)"
+      - name: Offline tests with real Pinocchio
+        run: >-
+          micromamba run -n arm-ci python -m pytest -p pytest_timeout -p pytest_cov.plugin --timeout=60
+          --cov=linkerbot_arm --cov-report=term-missing:skip-covered
+          --cov-report=xml:reports/coverage.xml --junitxml=reports/pytest.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: tests-windows-latest-py${{ matrix.python }}
           path: reports/
           if-no-files-found: warn
           retention-days: 14
@@ -131,16 +184,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
           path: .ci/transport
           ref: ${{ env.CI_DEPENDENCY_REF }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.10"
       - name: Create isolated Python environment
@@ -163,7 +216,7 @@ jobs:
       - name: Verify installed package and resources outside checkout
         working-directory: ${{ runner.temp }}
         run: python "$GITHUB_WORKSPACE/tools/check_installed.py"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: distributions
@@ -181,16 +234,16 @@ jobs:
       matrix:
         ros: [humble, jazzy]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
           path: .ci/transport
           ref: ${{ env.CI_DEPENDENCY_REF }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-arm-ros2-sdk
@@ -198,7 +251,7 @@ jobs:
           ref: ${{ env.CI_DEPENDENCY_REF }}
       - name: Build and test this SDK with latest ROS wrapper
         run: bash ".ci/ros/docker/verify.sh" "${{ matrix.ros }}" "$PWD" "$PWD/.ci/transport" "$PWD/reports/${{ matrix.ros }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ros-consumer-${{ matrix.ros }}
