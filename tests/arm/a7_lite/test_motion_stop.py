@@ -8,7 +8,12 @@ from linkerbot_arm.arm import A7lite
 from tests.arm.a7_lite.conftest import prepare_interactive_test
 from tests.conftest import InteractiveSession
 
-pytestmark = [pytest.mark.hardware, pytest.mark.a7_lite, pytest.mark.interactive, pytest.mark.motion]
+pytestmark = [
+    pytest.mark.hardware,
+    pytest.mark.a7_lite,
+    pytest.mark.interactive,
+    pytest.mark.motion,
+]
 
 NUM_JOINTS = 7
 

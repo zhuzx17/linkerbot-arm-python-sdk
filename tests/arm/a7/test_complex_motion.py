@@ -16,7 +16,12 @@ import pytest
 from linkerbot_arm.arm import A7, Pose
 from tests.conftest import InteractiveSession
 
-pytestmark = [pytest.mark.hardware, pytest.mark.a7, pytest.mark.interactive, pytest.mark.motion]
+pytestmark = [
+    pytest.mark.hardware,
+    pytest.mark.a7,
+    pytest.mark.interactive,
+    pytest.mark.motion,
+]
 
 NUM_JOINTS = 7
 POS_TOLERANCE = 0.01  # 1 cm

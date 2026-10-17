@@ -95,7 +95,9 @@ def point_duration(arm, target):
         ) from error
 
 
-def _point_target_interval(previous, target, velocities, speeds, accelerations, elapsed):
+def _point_target_interval(
+    previous, target, velocities, speeds, accelerations, elapsed
+):
     """Find a shared interval that keeps an unchanged joint waypoint admissible.
 
     For a displacement d and previous signed velocity v, the next sample has
@@ -153,7 +155,8 @@ def _point_target_interval(previous, target, velocities, speeds, accelerations, 
                 upper
                 for lower, upper, distance, velocity, acceleration in gaps
                 if lower < interval < upper
-                and abs(distance / interval - velocity) > (acceleration + 1e-9) * interval
+                and abs(distance / interval - velocity)
+                > (acceleration + 1e-9) * interval
             ),
             default=interval,
         )

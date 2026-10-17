@@ -266,7 +266,9 @@ class MotionTimer:
 
     def _require_admission(self):
         if self._closing and not self._is_worker_thread():
-            raise StateError("Arm connection is closing or closed; new motion is unavailable")
+            raise StateError(
+                "Arm connection is closing or closed; new motion is unavailable"
+            )
 
 
 class CancellableHomeMixin:

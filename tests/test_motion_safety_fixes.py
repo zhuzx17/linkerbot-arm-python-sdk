@@ -222,7 +222,9 @@ def test_p7_point_execution_keeps_real_time_derivatives_bounded(
     assert not arm.is_moving()
 
 
-def test_p7_point_timing_wait_is_cancellable_and_restores_profiles(make_arm, monkeypatch):
+def test_p7_point_timing_wait_is_cancellable_and_restores_profiles(
+    make_arm, monkeypatch
+):
     from linkerbot_arm.arm.common import _stream
 
     arm, _ = make_arm(P7)
