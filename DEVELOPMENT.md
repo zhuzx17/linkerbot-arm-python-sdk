@@ -37,6 +37,9 @@ CAN_INTERFACE=can0 ARM_SIDE=left python -m pytest tests/arm/a7 -m 'hardware and 
 适配器契约检查不能替代实际节点和设备运行验证。
 发布前记录 Python、NumPy、SciPy、Pinocchio 版本以及真机验收结果，并更新 CHANGELOG。
 
+真实中断测试在 Linux 发送 SIGINT，在 Windows 新建独立控制台、显式启用 Ctrl+C 接收后发送事件，
+并验证重复中断时先完成工作线程恢复再关闭总线；另用待处理 Python 中断覆盖阻塞等待。
+工作线程清理采用有限等待片段，让挂起的中断有机会执行，等待超时本身不表示清理完成。
 两条 CAN 发送路径用 `perf_counter` 计算短间隔，测试保持原间隔门限，并用粗粒度
 单调时钟跳变复现发送节拍问题。Windows 上不使用会向系统时钟节拍取整的
 `Event.wait` 补足 300 微秒发送间隔：Python 3.11+ 使用高分辨率 `sleep`，
