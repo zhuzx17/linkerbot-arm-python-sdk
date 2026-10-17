@@ -9,7 +9,12 @@ from linkerbot_arm.arm import A7lite
 from tests.arm.a7_lite.conftest import NUM_JOINTS, get_pid_params
 from tests.conftest import InteractiveSession
 
-pytestmark = [pytest.mark.hardware, pytest.mark.a7_lite, pytest.mark.interactive, pytest.mark.extra]
+pytestmark = [
+    pytest.mark.hardware,
+    pytest.mark.a7_lite,
+    pytest.mark.interactive,
+    pytest.mark.extra,
+]
 
 
 class TestPIDSetting:

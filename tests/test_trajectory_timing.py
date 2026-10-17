@@ -302,9 +302,7 @@ def test_cleanup_cannot_override_lite_emergency_zero_speed_hold(rig, monkeypatch
 
     # Exercise the production setter, so finally restoration is staged while
     # stopped rather than accidentally overwriting the drive's persistent zero.
-    rig.arm.set_velocities = Mock(
-        wraps=A7lite.set_velocities.__get__(rig.arm, A7lite)
-    )
+    rig.arm.set_velocities = Mock(wraps=A7lite.set_velocities.__get__(rig.arm, A7lite))
 
     def run(operation):
         try:

@@ -7,7 +7,12 @@ import pytest
 from linkerbot_arm.arm import A7lite
 from tests.conftest import InteractiveSession
 
-pytestmark = [pytest.mark.hardware, pytest.mark.a7_lite, pytest.mark.interactive, pytest.mark.safety]
+pytestmark = [
+    pytest.mark.hardware,
+    pytest.mark.a7_lite,
+    pytest.mark.interactive,
+    pytest.mark.safety,
+]
 
 NUM_JOINTS = 7
 ZERO_TOLERANCE_RAD = 0.08

@@ -134,7 +134,9 @@ def stream_targets(
                 start, speeds, ramps = joint_profile
                 arm._point_target_profile = (speeds, ramps)
                 arm._stream_target_state = (
-                    list(start), [0.0] * len(start), time.perf_counter()
+                    list(start),
+                    [0.0] * len(start),
+                    time.perf_counter(),
                 )
         for angles in waypoints:
             deadline = time.perf_counter() + WAYPOINT_INTERVAL

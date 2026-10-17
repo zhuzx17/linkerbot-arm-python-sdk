@@ -1,0 +1,323 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      dependency_owner:
+        description: GitHub owner of dependency repositories
+        type: string
+        default: linker-bot
+      dependency_ref:
+        description: Dependency branch, tag or commit (empty uses normal defaults)
+        type: string
+        default: ""
+      full_matrix:
+        description: Include all supported Python versions
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CI_DEPENDENCY_OWNER: ${{ inputs.dependency_owner || vars.CI_DEPENDENCY_OWNER || 'linker-bot' }}
+  CI_DEPENDENCY_REF: ${{ inputs.dependency_ref || vars.CI_DEPENDENCY_REF || 'main' }}
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Create isolated Python environment
+        run: |
+          python -m venv "$RUNNER_TEMP/ci-venv"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            echo "$RUNNER_TEMP/ci-venv/Scripts" >> "$GITHUB_PATH"
+          else
+            echo "$RUNNER_TEMP/ci-venv/bin" >> "$GITHUB_PATH"
+          fi
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.2"
+          cache: false
+      - run: python -m pip install -r requirements/ci-lint.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - name: ShellCheck
+        run: git ls-files -z -- '*.sh' | xargs -0 -r shellcheck --severity=warning
+      - name: actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          actionlint
+
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        python: ${{ (github.event_name == 'schedule' || inputs.full_matrix) && fromJSON('["3.10", "3.11", "3.12", "3.13"]') || fromJSON('["3.10", "3.13"]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
+          path: .ci/transport
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Create isolated Python environment
+        run: |
+          python -m venv "$RUNNER_TEMP/ci-venv"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            echo "$RUNNER_TEMP/ci-venv/Scripts" >> "$GITHUB_PATH"
+          else
+            echo "$RUNNER_TEMP/ci-venv/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Record source revisions
+        run: |
+          git rev-parse HEAD
+          git -C .ci/transport rev-parse HEAD
+      - run: python -m pip install -r requirements/ci-test.txt
+      - run: python -m pip install ".ci/transport[all]"
+      - name: Install test subject and dependencies
+        run: |
+          python -m pip install ".[test,kinetix]"
+          python -m pip check
+          python -c "import pinocchio; print(pinocchio.__version__)"
+      - name: Offline tests
+        run: >-
+          python -m pytest -p pytest_timeout -p pytest_cov.plugin --timeout=60
+          --cov=linkerbot_arm --cov-report=term-missing:skip-covered
+          --cov-report=xml:reports/coverage.xml --junitxml=reports/pytest.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: tests-${{ matrix.os }}-py${{ matrix.python }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+  test-windows:
+    name: Test (windows-latest, Python ${{ matrix.python }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ (github.event_name == 'schedule' || inputs.full_matrix) && fromJSON('["3.10", "3.11", "3.12", "3.13"]') || fromJSON('["3.10", "3.13"]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
+          path: .ci/transport
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: arm-ci
+          create-args: >-
+            python=${{ matrix.python }}
+            pinocchio=4.1.0
+            scipy
+            pip
+          init-shell: none
+          generate-run-shell: false
+          post-cleanup: all
+      - name: Record source revisions and Windows environment
+        run: |
+          git rev-parse HEAD
+          git -C .ci/transport rev-parse HEAD
+          micromamba list -n arm-ci
+      - name: Install test subject and dependencies
+        run: |
+          micromamba run -n arm-ci python -m pip install -r requirements/ci-test.txt
+          micromamba run -n arm-ci python -m pip install ".ci/transport[all]" ".[test]"
+          micromamba run -n arm-ci python -m pip check
+          micromamba run -n arm-ci python -c "import sys, pinocchio; print(sys.version); print(pinocchio.__version__, pinocchio.__file__)"
+      - name: Offline tests with real Pinocchio
+        run: >-
+          micromamba run -n arm-ci python -m pytest -p pytest_timeout -p pytest_cov.plugin --timeout=60
+          --cov=linkerbot_arm --cov-report=term-missing:skip-covered
+          --cov-report=xml:reports/coverage.xml --junitxml=reports/pytest.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: tests-windows-latest-py${{ matrix.python }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+  package:
+    name: Build and install
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
+          path: .ci/transport
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+      - name: Create isolated Python environment
+        run: |
+          python -m venv "$RUNNER_TEMP/ci-venv"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            echo "$RUNNER_TEMP/ci-venv/Scripts" >> "$GITHUB_PATH"
+          else
+            echo "$RUNNER_TEMP/ci-venv/bin" >> "$GITHUB_PATH"
+          fi
+      - run: python -m pip install -r requirements/ci-test.txt
+      - run: python -m build
+      - run: python -m pip install ".ci/transport[all]"
+      - name: Install built wheel
+        run: |
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+          python -m pip install "${wheels[0]}[kinetix]"
+          python -m pip check
+      - name: Verify installed package and resources outside checkout
+        working-directory: ${{ runner.temp }}
+        run: python "$GITHUB_WORKSPACE/tools/check_installed.py"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: warn
+          retention-days: 14
+
+  resolve-integration:
+    name: Resolve integration source revisions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      transport_sha: ${{ steps.revisions.outputs.transport_sha }}
+      hand_sha: ${{ steps.revisions.outputs.hand_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
+          path: .ci/transport
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-hand-python-sdk
+          path: .ci/hand
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - name: Pin dependency revisions for all integration jobs
+        id: revisions
+        run: |
+          for name in transport hand; do
+            revision=$(git -C ".ci/$name" rev-parse HEAD)
+            echo "${name}_sha=$revision" | tee -a "$GITHUB_OUTPUT"
+          done
+
+  integration:
+    name: Two hands and two arms integration (${{ matrix.os }}, Python ${{ matrix.python }})
+    needs: resolve-integration
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+        python: ${{ (github.event_name == 'schedule' || inputs.full_matrix) && fromJSON('["3.10", "3.11", "3.12", "3.13"]') || fromJSON('["3.10", "3.13"]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
+          path: .ci/transport
+          ref: ${{ needs.resolve-integration.outputs.transport_sha }}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-hand-python-sdk
+          path: .ci/hand
+          ref: ${{ needs.resolve-integration.outputs.hand_sha }}
+      - uses: ./.ci/transport/.github/actions/four-devices
+        with:
+          python-version: ${{ matrix.python }}
+          transport-path: .ci/transport
+          hand-path: .ci/hand
+          arm-path: .
+          artifact-name: integration-${{ matrix.os }}-py${{ matrix.python }}
+
+  ros-consumer:
+    name: Latest ROS compatibility (${{ matrix.ros }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        ros: [humble, jazzy]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
+          path: .ci/transport
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-arm-ros2-sdk
+          path: .ci/ros
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - name: Build and test this SDK with latest ROS wrapper
+        run: bash ".ci/ros/docker/verify.sh" "${{ matrix.ros }}" "$PWD" "$PWD/.ci/transport" "$PWD/reports/${{ matrix.ros }}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ros-consumer-${{ matrix.ros }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14

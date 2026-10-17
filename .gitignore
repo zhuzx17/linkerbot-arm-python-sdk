@@ -10,3 +10,6 @@ docs/zh/book/
 tests/reports/
 .coverage
 /.local-notes/
+
+# Local CI reports
+/reports/

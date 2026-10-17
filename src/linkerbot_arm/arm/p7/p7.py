@@ -251,7 +251,10 @@ class P7(ArmMotionQueueMixin, CancellableHomeMixin):
                     raise _TargetDelay(max(interval - elapsed, math.ulp(now)))
                 state = (
                     list(angles),
-                    [(goal - start) / elapsed for start, goal in zip(previous[0], angles)],
+                    [
+                        (goal - start) / elapsed
+                        for start, goal in zip(previous[0], angles)
+                    ],
                     now,
                 )
             else:
