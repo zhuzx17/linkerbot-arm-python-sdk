@@ -31,12 +31,36 @@ CAN_INTERFACE=can0 ARM_SIDE=left python -m pytest tests/arm/a7 -m 'hardware and 
 ```
 
 修改打包或 URDF 后，必须在源码目录之外安装 wheel 验证导入和八个模型的加载。
+CI 使用 `tools/check_installed.py` 检查该项，并确认 `py.typed` 与许可证进入安装包。
 修改 ROS2 接入后，在安装新 SDK 的环境运行 ROS2 仓库 `tests/`；带 rclpy 的环境会额外运行真实节点测试。
 可运行 `python tools/check_ros2_adapter.py ../linkerbot-arm-ros2-sdk` 检查真实 adapter 的调用契约（路径按实际 checkout 调整）；
 该工具直接使用生产 loader 加载 `linkerbot_arm`，不创建旧命名空间别名；
 适配器契约检查不能替代实际节点和设备运行验证。
 发布前记录 Python、NumPy、SciPy、Pinocchio 版本以及真机验收结果，并更新 CHANGELOG。
 
+## GitHub CI
+
+PR 与 `main` 更新执行 Ruff lint/format、ShellCheck、actionlint，以及 Linux/Windows 上的
+Python 3.10、3.13 离线测试；每周补测 3.11、3.12。测试安装真实 Pinocchio 并检查导入，
+沿用现有配置排除 `hardware` 和 `interactive` 用例。独立打包任务构建 sdist、wheel，
+在源码目录之外验证 wheel 和八个 URDF。每周及手动运行还会使用当前 SDK 测试最新
+ROS2 wrapper 的 Humble/Jazzy Docker 环境。Transport 从 GitHub `main` 安装，
+日志记录实际源码提交，不访问 Gitea。
+
+PR 与 `main` 更新同时运行 Transport 中已有的双手双臂联合测试，沿用相同的
+Linux/Windows、Python 矩阵。Arm 使用本次工作流提交（PR 使用合并结果），
+Transport、Hand 在本轮联合矩阵内先解析为固定提交，再由全部联合任务复用。
+测试运行真实 SDK 和 Pinocchio，只模拟四路虚拟 CAN 另一端的设备；每个任务保存
+三个源码版本及 JUnit，验证并发收发、同 ID 隔离、单通道失联重建与背压隔离。
+
+Linux 使用 PyPI 的 `[kinetix]` 依赖；Windows 沿用安装文档的 Conda 路线，
+通过 micromamba 创建独立环境，安装 Conda Forge `pinocchio=4.1.0` 和基础 SDK 的
+`[test]` 依赖，不混装没有 Windows wheel 的 PyPI `pin`。两平台执行相同的完整离线
+测试选择并保存 JUnit/覆盖率，记录实际数值库版本；不额外跳过 Windows 失败用例。
+这不代表厂商 Windows 驱动、真实 CAN 或机械臂动作已经验证。
+
+CAN FD 兼容测试显式选择 Linux/Windows ABI，在两种主机上都覆盖参数、错误转换、
+并发关闭和失败重试；Linux `LibCANbus_Init/Exit` 用例使用 Linux fake。
 真实中断测试在 Linux 发送 SIGINT，在 Windows 新建独立控制台、显式启用 Ctrl+C 接收后发送事件，
 并验证重复中断时先完成工作线程恢复再关闭总线；另用待处理 Python 中断覆盖阻塞等待。
 工作线程清理采用有限等待片段，让挂起的中断有机会执行，等待超时本身不表示清理完成。
@@ -51,3 +75,34 @@ Python 3.10 使用独立的 Windows 高分辨率等待计时器（Windows 10 180
 Windows 短等待期间的关闭请求至多额外请求剩余 300 µs，操作系统仍可能延后调度。
 本地 Linux 单测覆盖分支选择、粗粒度 Event 等待复现、原生 API 错误和句柄清理；
 这些替身测试不能替代 Windows runner 对真实计时器与并发轮询吞吐的验证。
+
+复现 CI 工具和报告配置（先按安装文档准备 Transport）：
+
+```bash
+python -m pip install -r requirements/ci-lint.txt -r requirements/ci-test.txt
+python -m pip install -e '.[kinetix,test]'
+ruff check .
+ruff format --check .
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p pytest_timeout -p pytest_cov.plugin \
+  --timeout=60 --cov=linkerbot_arm --cov-report=term-missing:skip-covered \
+  --cov-report=xml:reports/coverage.xml --junitxml=reports/pytest.xml
+```
+
+显式加载超时和覆盖率插件，避免系统第三方插件干扰。覆盖率先记录基线，不设置最低阈值。
+`reports/` 与 `dist/` 作为 Actions artifacts 保留 14 天；CI 不发布包，也不连接机械臂。
+
+## 在个人 fork 验证 CI
+
+Actions 的手动运行入口支持 `dependency_owner` 和 `dependency_ref`：默认仍使用
+`linker-bot` 依赖，以及原有的 main/配对提交规则。跨仓库改动可先将 Transport、
+Hand/Arm Python SDK 和两个 ROS 仓库推送到个人 fork 的同名测试分支，再统一指定
+个人账号与该分支，避免混用上游尚未更新的测试脚本。日志记录实际使用的源码提交。
+
+联合任务始终测试本次 Arm 工作流的代码；上述参数仅选择其他仓库的依赖。
+所选 Transport 提交必须包含 `.github/actions/four-devices` 共享执行步骤；首次合入时
+先合入 Transport，再合入 Hand/Arm 工作流。
+
+新 fork 的工作流需要启用 Actions，且默认分支上需要包含工作流文件，才能手动运行；
+可以仅将个人 fork 的默认分支设为测试分支。上游默认分支不受影响。
+
+手动运行时设置 `full_matrix=true`，会补齐 Python 3.11、3.12；ROS/SDK 消费者任务也会运行。

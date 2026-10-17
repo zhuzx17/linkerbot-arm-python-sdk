@@ -1,5 +1,6 @@
 import threading
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -43,14 +44,19 @@ class FakeLibrary:
 
 
 def make_interface(
-    monkeypatch: pytest.MonkeyPatch, lib: FakeLibrary
+    monkeypatch: pytest.MonkeyPatch, lib: FakeLibrary, *, system: str = "Linux"
 ) -> backend.CANFDInterface:
+    # Select the fake library's ABI explicitly, independently of the test host.
+    monkeypatch.setattr(
+        transport_backend, "platform", SimpleNamespace(system=lambda: system)
+    )
     monkeypatch.setattr(transport_backend, "_load_library", lambda library_path: lib)
     return backend.CANFDInterface()
 
 
+@pytest.mark.parametrize("system", ("Linux", "Windows"))
 def test_concurrent_close_waits_for_io_device_close_and_lifecycle_release(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, system: str
 ) -> None:
     lib = FakeLibrary()
     send_entered = threading.Event()
@@ -94,7 +100,7 @@ def test_concurrent_close_waits_for_io_device_close_and_lifecycle_release(
     lib.CANFD_Receive.hook = blocking_receive
     lib.CAN_CloseDevice.hook = blocking_vendor_close
     lib.LibCANbus_Exit.hook = blocking_lifecycle_exit
-    interface = make_interface(monkeypatch, lib)
+    interface = make_interface(monkeypatch, lib, system=system)
 
     errors: list[Exception] = []
     send_done = threading.Event()
@@ -155,12 +161,12 @@ def test_concurrent_close_waits_for_io_device_close_and_lifecycle_release(
     assert not first_close_done.is_set()
     assert not second_close_done.is_set()
 
-    # Device close alone is not completion: the process-level lifecycle exit
-    # must finish before a waiter can safely return and reopen the library.
+    # Linux also owns a process-level lifecycle; Windows owns only the channel.
     allow_vendor_close.set()
-    assert lifecycle_exit_entered.wait(timeout=1.0)
-    assert not first_close_done.is_set()
-    assert not second_close_done.is_set()
+    if system == "Linux":
+        assert lifecycle_exit_entered.wait(timeout=1.0)
+        assert not first_close_done.is_set()
+        assert not second_close_done.is_set()
 
     allow_lifecycle_exit.set()
     assert first_close_done.wait(timeout=1.0)
@@ -175,19 +181,22 @@ def test_concurrent_close_waits_for_io_device_close_and_lifecycle_release(
         assert not thread.is_alive()
 
     assert errors == []
-    assert lib.CAN_CloseDevice.calls == [(0, 0)]
-    assert len(lib.LibCANbus_Init.calls) == 1
-    assert len(lib.LibCANbus_Exit.calls) == 1
+    channel_args = (0,) if system == "Windows" else (0, 0)
+    lifecycle_calls = int(system == "Linux")
+    assert lib.CAN_CloseDevice.calls == [channel_args]
+    assert len(lib.LibCANbus_Init.calls) == lifecycle_calls
+    assert len(lib.LibCANbus_Exit.calls) == lifecycle_calls
 
     reopened = backend.CANFDInterface()
-    assert len(lib.LibCANbus_Init.calls) == 2
+    assert len(lib.LibCANbus_Init.calls) == 2 * lifecycle_calls
     reopened.close()
     assert len(lib.CAN_CloseDevice.calls) == 2
-    assert len(lib.LibCANbus_Exit.calls) == 2
+    assert len(lib.LibCANbus_Exit.calls) == 2 * lifecycle_calls
 
 
+@pytest.mark.parametrize("system", ("Linux", "Windows"))
 def test_concurrent_close_waiter_is_notified_when_vendor_close_raises(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, system: str
 ) -> None:
     lib = FakeLibrary()
     vendor_close_entered = threading.Event()
@@ -201,7 +210,7 @@ def test_concurrent_close_waiter_is_notified_when_vendor_close_raises(
         raise OSError("vendor close crashed")
 
     lib.CAN_CloseDevice.hook = failing_vendor_close
-    interface = make_interface(monkeypatch, lib)
+    interface = make_interface(monkeypatch, lib, system=system)
     first_errors: list[Exception] = []
     second_errors: list[Exception] = []
     first_done = threading.Event()
@@ -242,7 +251,8 @@ def test_concurrent_close_waiter_is_notified_when_vendor_close_raises(
     assert "vendor close crashed" in str(first_errors[0])
     assert len(second_errors) == 1
     assert isinstance(second_errors[0], CANError)
-    assert lib.CAN_CloseDevice.calls == [(0, 0), (0, 0)]
+    channel_args = (0,) if system == "Windows" else (0, 0)
+    assert lib.CAN_CloseDevice.calls == [channel_args, channel_args]
     assert len(lib.LibCANbus_Exit.calls) == 0
     assert interface._close_complete_event.is_set()
     with pytest.raises(CANError):
@@ -251,15 +261,16 @@ def test_concurrent_close_waiter_is_notified_when_vendor_close_raises(
     interface.close()
     interface.close()
     assert len(lib.CAN_CloseDevice.calls) == 3
-    assert len(lib.LibCANbus_Exit.calls) == 1
+    assert len(lib.LibCANbus_Exit.calls) == int(system == "Linux")
 
 
+@pytest.mark.parametrize("system", ("Linux", "Windows"))
 @pytest.mark.parametrize(
     "operation", ["send", "send_batch", "receive", "read_dev_info"]
 )
-def test_vendor_failures_keep_arm_error_type(monkeypatch, operation):
+def test_vendor_failures_keep_arm_error_type(monkeypatch, operation, system):
     lib = FakeLibrary()
-    interface = make_interface(monkeypatch, lib)
+    interface = make_interface(monkeypatch, lib, system=system)
     lib.CANFD_Transmit.result = -1
     lib.CANFD_Receive.result = -1
     lib.CAN_ReadDevInfo.result = -1
@@ -273,9 +284,10 @@ def test_vendor_failures_keep_arm_error_type(monkeypatch, operation):
         interface.close()
 
 
+@pytest.mark.parametrize("system", ("Linux", "Windows"))
 @pytest.mark.parametrize("operation", ["send", "send_batch", "receive"])
-def test_vendor_input_validation_keeps_arm_error_type(monkeypatch, operation):
-    interface = make_interface(monkeypatch, FakeLibrary())
+def test_vendor_input_validation_keeps_arm_error_type(monkeypatch, operation, system):
+    interface = make_interface(monkeypatch, FakeLibrary(), system=system)
     message = CANFDMessage(1, b"x")
     args = {"send": (message,), "send_batch": ([message, message],)}
     try:
@@ -286,12 +298,16 @@ def test_vendor_input_validation_keeps_arm_error_type(monkeypatch, operation):
         interface.close()
 
 
-def test_shared_vendor_lifecycle_keeps_transport_close_policy(monkeypatch):
+@pytest.mark.parametrize("system", ("Linux", "Windows"))
+def test_shared_vendor_lifecycle_keeps_transport_close_policy(monkeypatch, system):
     lib = FakeLibrary()
-    interface = make_interface(monkeypatch, lib)
-    other = transport_backend.CANFDInterface(channel_index=1)
+    lib.CAN_ScanDevice.result = 2
+    interface = make_interface(monkeypatch, lib, system=system)
+    other = transport_backend.CANFDInterface(
+        **({"device_index": 1} if system == "Windows" else {"channel_index": 1})
+    )
     try:
-        assert len(lib.LibCANbus_Init.calls) == 1
+        assert len(lib.LibCANbus_Init.calls) == int(system == "Linux")
         lib.CAN_CloseDevice.result = -1
         with pytest.raises(CANError):
             interface.close()
@@ -311,18 +327,19 @@ def test_shared_vendor_lifecycle_keeps_transport_close_policy(monkeypatch):
         interface.close()
         interface.close()
         assert len(lib.CAN_CloseDevice.calls) == 5
-        assert len(lib.LibCANbus_Exit.calls) == 1
+        assert len(lib.LibCANbus_Exit.calls) == int(system == "Linux")
     finally:
         lib.CAN_CloseDevice.result = 0
         interface.close()
         other.close()
 
 
-def test_vendor_messages_and_config_keep_arm_identity(monkeypatch):
+@pytest.mark.parametrize("system", ("Linux", "Windows"))
+def test_vendor_messages_and_config_keep_arm_identity(monkeypatch, system):
     import pickle
 
     lib = FakeLibrary()
-    interface = make_interface(monkeypatch, lib)
+    interface = make_interface(monkeypatch, lib, system=system)
     message = CANFDMessage(0x123, b"payload", timestamp=7)
     try:
         frame = interface._message_to_frame(message)

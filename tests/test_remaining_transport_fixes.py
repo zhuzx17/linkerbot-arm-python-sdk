@@ -24,7 +24,20 @@ def position_reply(value=1.25):
 
 
 @pytest.mark.parametrize(
-    "invalid", ["id", "extended", "remote", "error", "fd", "echo", "short", "long", "dlc", "nan", "inf"]
+    "invalid",
+    [
+        "id",
+        "extended",
+        "remote",
+        "error",
+        "fd",
+        "echo",
+        "short",
+        "long",
+        "dlc",
+        "nan",
+        "inf",
+    ],
 )
 def test_a7_rejects_bad_reply_and_accepts_next_valid_one(invalid):
     dispatcher = FakeDispatcher()
@@ -67,7 +80,11 @@ def test_a7_handshake_request_echo_does_not_prove_alive():
     dispatcher.send = lambda request: dispatcher.feedback(request)
     assert not motor.check_alive(timeout_s=0)
     dispatcher.send = lambda request: dispatcher.feedback(
-        can.Message(arbitration_id=61, is_extended_id=False, data=[InternalSensorType.HANDSHAKE, 1])
+        can.Message(
+            arbitration_id=61,
+            is_extended_id=False,
+            data=[InternalSensorType.HANDSHAKE, 1],
+        )
     )
     assert motor.check_alive(timeout_s=0)
 
