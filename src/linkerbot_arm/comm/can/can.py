@@ -38,6 +38,7 @@ from linkerbot_transport.errors import (
     ValidationError as _TransportValidationError,
 )
 
+from linkerbot_arm._transport.pacing import wait_for_send_deadline
 from linkerbot_arm._transport.reception import reception_time
 from linkerbot_arm._transport.targets import TargetQueueMixin
 from linkerbot_arm.exceptions import CANError, ValidationError
@@ -147,7 +148,7 @@ class CANMessageDispatcher(TargetQueueMixin, _TransportDispatcher):
             periodic.close()
 
     def _dispatch_frame(self, message):
-        deadline = time.monotonic() + self.SEND_INTERVAL_S
+        deadline = time.perf_counter() + self.SEND_INTERVAL_S
         try:
             super().send_now(message)
             self._tx_errors = 0
@@ -157,7 +158,7 @@ class CANMessageDispatcher(TargetQueueMixin, _TransportDispatcher):
             if self._tx_errors >= self._max_consecutive_errors:
                 self._handle_bus_error(error)
             raise
-        self._tx_stopped.wait(max(0.0, deadline - time.monotonic()))
+        wait_for_send_deadline(deadline, self._tx_stopped)
         return SendReceipt.completed()
 
     def stop(self) -> None:

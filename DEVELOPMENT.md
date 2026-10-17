@@ -36,3 +36,15 @@ CAN_INTERFACE=can0 ARM_SIDE=left python -m pytest tests/arm/a7 -m 'hardware and 
 该工具直接使用生产 loader 加载 `linkerbot_arm`，不创建旧命名空间别名；
 适配器契约检查不能替代实际节点和设备运行验证。
 发布前记录 Python、NumPy、SciPy、Pinocchio 版本以及真机验收结果，并更新 CHANGELOG。
+
+两条 CAN 发送路径用 `perf_counter` 计算短间隔，测试保持原间隔门限，并用粗粒度
+单调时钟跳变复现发送节拍问题。Windows 上不使用会向系统时钟节拍取整的
+`Event.wait` 补足 300 微秒发送间隔：Python 3.11+ 使用高分辨率 `sleep`，
+Python 3.10 使用独立的 Windows 高分辨率等待计时器（Windows 10 1803+），
+每次等待后释放句柄，不改变全局计时器分辨率；其他平台仍使用可中断等待。
+七电机回归同时保持位置、速度和力矩的 30ms 轮询，并验证连续配置写入、反馈更新和
+线程退出。收发元数据、业务超时、FIFO 顺序和配置写入的一秒截止时间保持原约定。
+只补足物理发送后的剩余时间，已关闭连接或已到期时直接返回。
+Windows 短等待期间的关闭请求至多额外请求剩余 300 µs，操作系统仍可能延后调度。
+本地 Linux 单测覆盖分支选择、粗粒度 Event 等待复现、原生 API 错误和句柄清理；
+这些替身测试不能替代 Windows runner 对真实计时器与并发轮询吞吐的验证。
