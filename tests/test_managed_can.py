@@ -1,17 +1,22 @@
 """Exercise CANTransport through real transport lifecycle and queues."""
 
 import queue
+import struct
 import threading
 import time
 import uuid
+from collections import Counter
+from types import SimpleNamespace
 
 import can
 import pytest
-from linkerbot_transport import TransportState
+from linkerbot_transport import SendReceipt, TransportState
 from linkerbot_transport.can import CANTransport
 from linkerbot_transport.testing import FakeDispatcher
 
 from linkerbot_arm._transport import can as managed
+from linkerbot_arm._transport import pacing
+from linkerbot_arm.arm.a7.motor import A7Motor, SensorType
 from linkerbot_arm.exceptions import CANError, TimeoutError
 
 
@@ -128,22 +133,175 @@ def test_async_fifo_is_bounded_and_close_does_not_replay_pending_targets(
         release.set()
 
 
-def test_fifo_order_and_legacy_successful_send_spacing(connection):
+def test_fifo_order_and_legacy_successful_send_spacing(connection, monkeypatch):
     adapter, backend = connection()
     times = []
-    original = backend.send_now
 
-    def record(message):
-        times.append(time.monotonic())
-        original(message)
+    def record_start():
+        started = time.perf_counter()
+        times.append(started)
+        return started
 
-    backend.send_now = record
+    # The successful-send period starts at _dispatch, before transport locks
+    # and receipt creation. Backend starts can be closer when that frontend
+    # overhead differs between frames; sample the actual pacing clock boundary.
+    monkeypatch.setattr(managed, "time", SimpleNamespace(perf_counter=record_start))
     messages = [can.Message(arbitration_id=61, data=[n]) for n in range(12)]
     for message in messages:
         assert adapter.send(message) is None
     wait_until(lambda: len(backend.sent) == len(messages))
     assert backend.sent == messages
-    assert all(b - a >= adapter.SEND_INTERVAL_S * 0.8 for a, b in zip(times, times[1:]))
+    assert len(times) == len(messages)
+    intervals = [b - a for a, b in zip(times, times[1:])]
+    minimum = adapter.SEND_INTERVAL_S * 0.8
+    assert all(interval >= minimum for interval in intervals), {
+        "intervals_s": intervals,
+        "minimum_s": minimum,
+    }
+
+
+def test_frontend_delay_is_included_in_successful_send_period(monkeypatch):
+    elapsed = [0.0]
+    starts = []
+    backend_starts = []
+    sent = []
+
+    def record_start():
+        starts.append(elapsed[0])
+        return elapsed[0]
+
+    def send(message):
+        if not sent:
+            # Model first-frame lock/receipt overhead or preemption before the
+            # backend. It consumes the existing send period, not an extra one.
+            elapsed[0] += 0.00012
+        backend_starts.append(elapsed[0])
+        sent.append(message)
+        return SendReceipt.completed()
+
+    def wait(remaining):
+        elapsed[0] += remaining
+
+    monkeypatch.setattr(managed, "time", SimpleNamespace(perf_counter=record_start))
+    monkeypatch.setattr(
+        pacing, "time", SimpleNamespace(perf_counter=lambda: elapsed[0])
+    )
+    monkeypatch.setattr(pacing, "sys", SimpleNamespace(platform="linux"))
+    adapter = SimpleNamespace(
+        SEND_INTERVAL_S=0.0003,
+        _lock=threading.RLock(),
+        _require_running=lambda: None,
+        _transport=SimpleNamespace(send=send),
+        _stopped=SimpleNamespace(is_set=lambda: False, wait=wait),
+    )
+    messages = [can.Message(arbitration_id=61, data=[n]) for n in range(2)]
+    for message in messages:
+        managed.ManagedCANDispatcher._dispatch(adapter, message)
+
+    assert sent == messages
+    assert starts[1] - starts[0] == pytest.approx(adapter.SEND_INTERVAL_S)
+    assert backend_starts[1] - backend_starts[0] == pytest.approx(0.00018)
+    # The old backend-boundary assertion would reject this valid 300 us period.
+    assert backend_starts[1] - backend_starts[0] < adapter.SEND_INTERVAL_S * 0.8
+
+
+def test_configuration_writes_complete_while_all_joints_keep_polling(connection):
+    adapter, backend = connection()
+    motors = [A7Motor(mid, adapter) for mid in range(61, 68)]
+    sensors = (SensorType.POSITION, SensorType.VELOCITY, SensorType.TORQUE)
+    observed = threading.Lock()
+    polls = Counter()
+    writes = []
+    measured_velocities = dict.fromkeys(range(61, 68), 0.1)
+    original = backend.send_now
+
+    def device_reply(message):
+        original(message)
+        mid = message.arbitration_id
+        data = bytes(message.data)
+        with observed:
+            if len(data) == 5 and data[0] == 0x1F:
+                velocity = struct.unpack("<f", data[1:])[0]
+                previous = getattr(motors[mid - 61], "_control_velocity", None)
+                writes.append((mid, velocity, previous))
+                measured_velocities[mid] = velocity
+                return
+            if len(data) != 1 or data[0] not in sensors:
+                return
+            polls[mid, data[0]] += 1
+            value = measured_velocities[mid] if data[0] == SensorType.VELOCITY else 0.25
+        # Only the remote device is simulated. Replies traverse Transport's
+        # receive router, the Arm RX worker, real motor relays and scheduler.
+        backend.emit(
+            can.Message(
+                arbitration_id=mid,
+                is_extended_id=False,
+                data=data + struct.pack("<f", value),
+            )
+        )
+
+    backend.send_now = device_reply
+    workers = [adapter._recv_thread, adapter._tx._worker]
+    scheduler = None
+    try:
+        for motor in motors:
+            motor.start_polling(dict.fromkeys(sensors, 0.03))
+        scheduler = adapter._arm_periodic_scheduler
+        workers.append(scheduler._thread)
+        wait_until(
+            lambda: all(
+                all(
+                    hasattr(motor, field)
+                    for field in ("_angle", "_velocity", "_torque")
+                )
+                for motor in motors
+            )
+        )
+        for round_number in range(3):
+            with observed:
+                before = polls.copy()
+            targets = [0.2 + round_number / 10 + index / 100 for index in range(7)]
+            for motor, target in zip(motors, targets):
+                # Keep the production checked-send deadline of one second;
+                # continuous polling must not starve configuration delivery.
+                motor.set_velocity(target)
+                assert motor.control_velocity.velocity == target
+
+            def next_poll_round():
+                with observed:
+                    progressed = all(
+                        polls[mid, sensor] > before[mid, sensor]
+                        for mid in range(61, 68)
+                        for sensor in sensors
+                    )
+                return progressed and all(
+                    motor.velocity.velocity == pytest.approx(target)
+                    for motor, target in zip(motors, targets)
+                )
+
+            wait_until(next_poll_round)
+            with observed:
+                delivered = writes[round_number * 7 : (round_number + 1) * 7]
+            assert [mid for mid, _, _ in delivered] == list(range(61, 68))
+            assert [value for _, value, _ in delivered] == pytest.approx(targets)
+            assert all(
+                previous is None or previous.velocity != pytest.approx(target)
+                for (_, _, previous), target in zip(delivered, targets)
+            )
+        assert len(writes) == 21
+        health = adapter.get_health()[1]
+        assert health.expired == health.failed == health.rejected_full == 0
+    finally:
+        for motor in motors:
+            motor.stop_polling()
+        adapter.stop()
+    assert scheduler is not None and not scheduler._tasks
+    assert all(not worker.is_alive() for worker in workers)
+    assert all(
+        not relay._waiters and not relay._request_lock.locked()
+        for motor in motors
+        for relay in motor._read_relays.values()
+    )
 
 
 def test_rx_disconnect_reports_once_cleans_connection_and_rejects_more_commands(

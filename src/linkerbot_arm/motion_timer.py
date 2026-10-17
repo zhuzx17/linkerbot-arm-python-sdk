@@ -50,7 +50,11 @@ class MotionTimer:
     def _wait_worker_done(self, *, report_error=False):
         if self._is_worker_thread():
             raise StateError("Cannot wait for motion cleanup from its own worker")
-        self._worker_done.wait()
+        # Older Windows locks do not interrupt an unbounded wait for Python
+        # signal handlers. Return to Python periodically without releasing the
+        # worker's resources or treating a timeout as completion.
+        while not self._worker_done.wait(timeout=0.05):
+            pass
         if report_error and self._worker_error is not None:
             raise self._worker_error
 
