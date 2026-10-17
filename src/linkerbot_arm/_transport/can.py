@@ -29,6 +29,7 @@ from linkerbot_transport.errors import ValidationError as TransportValidationErr
 
 from linkerbot_arm.exceptions import CANError, StateError, TimeoutError, ValidationError
 
+from .pacing import wait_for_send_deadline
 from .reception import reception_time
 from .targets import TargetQueueMixin
 
@@ -190,7 +191,7 @@ class ManagedCANDispatcher(TargetQueueMixin):
                 self._fault(error)
             raise
         # Preserve the original successful-send pacing without blocking callers.
-        self._stopped.wait(max(0.0, deadline - time.perf_counter()))
+        wait_for_send_deadline(deadline, self._stopped)
         return receipt
 
     def _fault(self, error: Exception) -> None:

@@ -1,9 +1,11 @@
 """Exercise CANTransport through real transport lifecycle and queues."""
 
 import queue
+import struct
 import threading
 import time
 import uuid
+from collections import Counter
 
 import can
 import pytest
@@ -12,6 +14,7 @@ from linkerbot_transport.can import CANTransport
 from linkerbot_transport.testing import FakeDispatcher
 
 from linkerbot_arm._transport import can as managed
+from linkerbot_arm.arm.a7.motor import A7Motor, SensorType
 from linkerbot_arm.exceptions import CANError, TimeoutError
 
 
@@ -149,6 +152,105 @@ def test_fifo_order_and_legacy_successful_send_spacing(connection):
         "intervals_s": intervals,
         "minimum_s": minimum,
     }
+
+
+def test_configuration_writes_complete_while_all_joints_keep_polling(connection):
+    adapter, backend = connection()
+    motors = [A7Motor(mid, adapter) for mid in range(61, 68)]
+    sensors = (SensorType.POSITION, SensorType.VELOCITY, SensorType.TORQUE)
+    observed = threading.Lock()
+    polls = Counter()
+    writes = []
+    measured_velocities = dict.fromkeys(range(61, 68), 0.1)
+    original = backend.send_now
+
+    def device_reply(message):
+        original(message)
+        mid = message.arbitration_id
+        data = bytes(message.data)
+        with observed:
+            if len(data) == 5 and data[0] == 0x1F:
+                velocity = struct.unpack("<f", data[1:])[0]
+                previous = getattr(motors[mid - 61], "_control_velocity", None)
+                writes.append((mid, velocity, previous))
+                measured_velocities[mid] = velocity
+                return
+            if len(data) != 1 or data[0] not in sensors:
+                return
+            polls[mid, data[0]] += 1
+            value = measured_velocities[mid] if data[0] == SensorType.VELOCITY else 0.25
+        # Only the remote device is simulated. Replies traverse Transport's
+        # receive router, the Arm RX worker, real motor relays and scheduler.
+        backend.emit(
+            can.Message(
+                arbitration_id=mid,
+                is_extended_id=False,
+                data=data + struct.pack("<f", value),
+            )
+        )
+
+    backend.send_now = device_reply
+    workers = [adapter._recv_thread, adapter._tx._worker]
+    scheduler = None
+    try:
+        for motor in motors:
+            motor.start_polling(dict.fromkeys(sensors, 0.03))
+        scheduler = adapter._arm_periodic_scheduler
+        workers.append(scheduler._thread)
+        wait_until(
+            lambda: all(
+                all(
+                    hasattr(motor, field)
+                    for field in ("_angle", "_velocity", "_torque")
+                )
+                for motor in motors
+            )
+        )
+        for round_number in range(3):
+            with observed:
+                before = polls.copy()
+            targets = [0.2 + round_number / 10 + index / 100 for index in range(7)]
+            for motor, target in zip(motors, targets):
+                # Keep the production checked-send deadline of one second;
+                # continuous polling must not starve configuration delivery.
+                motor.set_velocity(target)
+                assert motor.control_velocity.velocity == target
+
+            def next_poll_round():
+                with observed:
+                    progressed = all(
+                        polls[mid, sensor] > before[mid, sensor]
+                        for mid in range(61, 68)
+                        for sensor in sensors
+                    )
+                return progressed and all(
+                    motor.velocity.velocity == pytest.approx(target)
+                    for motor, target in zip(motors, targets)
+                )
+
+            wait_until(next_poll_round)
+            with observed:
+                delivered = writes[round_number * 7 : (round_number + 1) * 7]
+            assert [mid for mid, _, _ in delivered] == list(range(61, 68))
+            assert [value for _, value, _ in delivered] == pytest.approx(targets)
+            assert all(
+                previous is None or previous.velocity != pytest.approx(target)
+                for (_, _, previous), target in zip(delivered, targets)
+            )
+        assert len(writes) == 21
+        health = adapter.get_health()[1]
+        assert health.expired == health.failed == health.rejected_full == 0
+    finally:
+        for motor in motors:
+            motor.stop_polling()
+        adapter.stop()
+    assert scheduler is not None and not scheduler._tasks
+    assert all(not worker.is_alive() for worker in workers)
+    assert all(
+        not relay._waiters and not relay._request_lock.locked()
+        for motor in motors
+        for relay in motor._read_relays.values()
+    )
 
 
 def test_rx_disconnect_reports_once_cleans_connection_and_rejects_more_commands(
