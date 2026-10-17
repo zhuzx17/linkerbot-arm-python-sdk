@@ -224,6 +224,69 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  resolve-integration:
+    name: Resolve integration source revisions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      transport_sha: ${{ steps.revisions.outputs.transport_sha }}
+      hand_sha: ${{ steps.revisions.outputs.hand_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
+          path: .ci/transport
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-hand-python-sdk
+          path: .ci/hand
+          ref: ${{ env.CI_DEPENDENCY_REF }}
+      - name: Pin dependency revisions for all integration jobs
+        id: revisions
+        run: |
+          for name in transport hand; do
+            revision=$(git -C ".ci/$name" rev-parse HEAD)
+            echo "${name}_sha=$revision" | tee -a "$GITHUB_OUTPUT"
+          done
+
+  integration:
+    name: Two hands and two arms integration (${{ matrix.os }}, Python ${{ matrix.python }})
+    needs: resolve-integration
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+        python: ${{ (github.event_name == 'schedule' || inputs.full_matrix) && fromJSON('["3.10", "3.11", "3.12", "3.13"]') || fromJSON('["3.10", "3.13"]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-transport
+          path: .ci/transport
+          ref: ${{ needs.resolve-integration.outputs.transport_sha }}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          repository: ${{ env.CI_DEPENDENCY_OWNER }}/linkerbot-hand-python-sdk
+          path: .ci/hand
+          ref: ${{ needs.resolve-integration.outputs.hand_sha }}
+      - uses: ./.ci/transport/.github/actions/four-devices
+        with:
+          python-version: ${{ matrix.python }}
+          transport-path: .ci/transport
+          hand-path: .ci/hand
+          arm-path: .
+          artifact-name: integration-${{ matrix.os }}-py${{ matrix.python }}
+
   ros-consumer:
     name: Latest ROS compatibility (${{ matrix.ros }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

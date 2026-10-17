@@ -47,6 +47,12 @@ Python 3.10、3.13 离线测试；每周补测 3.11、3.12。测试安装真实 
 ROS2 wrapper 的 Humble/Jazzy Docker 环境。Transport 从 GitHub `main` 安装，
 日志记录实际源码提交，不访问 Gitea。
 
+PR 与 `main` 更新同时运行 Transport 中已有的双手双臂联合测试，沿用相同的
+Linux/Windows、Python 矩阵。Arm 使用本次工作流提交（PR 使用合并结果），
+Transport、Hand 在本轮联合矩阵内先解析为固定提交，再由全部联合任务复用。
+测试运行真实 SDK 和 Pinocchio，只模拟四路虚拟 CAN 另一端的设备；每个任务保存
+三个源码版本及 JUnit，验证并发收发、同 ID 隔离、单通道失联重建与背压隔离。
+
 Linux 使用 PyPI 的 `[kinetix]` 依赖；Windows 沿用安装文档的 Conda 路线，
 通过 micromamba 创建独立环境，安装 Conda Forge `pinocchio=4.1.0` 和基础 SDK 的
 `[test]` 依赖，不混装没有 Windows wheel 的 PyPI `pin`。两平台执行相同的完整离线
@@ -91,6 +97,10 @@ Actions 的手动运行入口支持 `dependency_owner` 和 `dependency_ref`：�
 `linker-bot` 依赖，以及原有的 main/配对提交规则。跨仓库改动可先将 Transport、
 Hand/Arm Python SDK 和两个 ROS 仓库推送到个人 fork 的同名测试分支，再统一指定
 个人账号与该分支，避免混用上游尚未更新的测试脚本。日志记录实际使用的源码提交。
+
+联合任务始终测试本次 Arm 工作流的代码；上述参数仅选择其他仓库的依赖。
+所选 Transport 提交必须包含 `.github/actions/four-devices` 共享执行步骤；首次合入时
+先合入 Transport，再合入 Hand/Arm 工作流。
 
 新 fork 的工作流需要启用 Actions，且默认分支上需要包含工作流文件，才能手动运行；
 可以仅将个人 fork 的默认分支设为测试分支。上游默认分支不受影响。
