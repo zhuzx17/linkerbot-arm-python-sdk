@@ -6,14 +6,16 @@ import threading
 import time
 import uuid
 from collections import Counter
+from types import SimpleNamespace
 
 import can
 import pytest
-from linkerbot_transport import TransportState
+from linkerbot_transport import SendReceipt, TransportState
 from linkerbot_transport.can import CANTransport
 from linkerbot_transport.testing import FakeDispatcher
 
 from linkerbot_arm._transport import can as managed
+from linkerbot_arm._transport import pacing
 from linkerbot_arm.arm.a7.motor import A7Motor, SensorType
 from linkerbot_arm.exceptions import CANError, TimeoutError
 
@@ -131,27 +133,76 @@ def test_async_fifo_is_bounded_and_close_does_not_replay_pending_targets(
         release.set()
 
 
-def test_fifo_order_and_legacy_successful_send_spacing(connection):
+def test_fifo_order_and_legacy_successful_send_spacing(connection, monkeypatch):
     adapter, backend = connection()
     times = []
-    original = backend.send_now
 
-    def record(message):
-        times.append(time.perf_counter())
-        original(message)
+    def record_start():
+        started = time.perf_counter()
+        times.append(started)
+        return started
 
-    backend.send_now = record
+    # The successful-send period starts at _dispatch, before transport locks
+    # and receipt creation. Backend starts can be closer when that frontend
+    # overhead differs between frames; sample the actual pacing clock boundary.
+    monkeypatch.setattr(managed, "time", SimpleNamespace(perf_counter=record_start))
     messages = [can.Message(arbitration_id=61, data=[n]) for n in range(12)]
     for message in messages:
         assert adapter.send(message) is None
     wait_until(lambda: len(backend.sent) == len(messages))
     assert backend.sent == messages
+    assert len(times) == len(messages)
     intervals = [b - a for a, b in zip(times, times[1:])]
     minimum = adapter.SEND_INTERVAL_S * 0.8
     assert all(interval >= minimum for interval in intervals), {
         "intervals_s": intervals,
         "minimum_s": minimum,
     }
+
+
+def test_frontend_delay_is_included_in_successful_send_period(monkeypatch):
+    elapsed = [0.0]
+    starts = []
+    backend_starts = []
+    sent = []
+
+    def record_start():
+        starts.append(elapsed[0])
+        return elapsed[0]
+
+    def send(message):
+        if not sent:
+            # Model first-frame lock/receipt overhead or preemption before the
+            # backend. It consumes the existing send period, not an extra one.
+            elapsed[0] += 0.00012
+        backend_starts.append(elapsed[0])
+        sent.append(message)
+        return SendReceipt.completed()
+
+    def wait(remaining):
+        elapsed[0] += remaining
+
+    monkeypatch.setattr(managed, "time", SimpleNamespace(perf_counter=record_start))
+    monkeypatch.setattr(
+        pacing, "time", SimpleNamespace(perf_counter=lambda: elapsed[0])
+    )
+    monkeypatch.setattr(pacing, "sys", SimpleNamespace(platform="linux"))
+    adapter = SimpleNamespace(
+        SEND_INTERVAL_S=0.0003,
+        _lock=threading.RLock(),
+        _require_running=lambda: None,
+        _transport=SimpleNamespace(send=send),
+        _stopped=SimpleNamespace(is_set=lambda: False, wait=wait),
+    )
+    messages = [can.Message(arbitration_id=61, data=[n]) for n in range(2)]
+    for message in messages:
+        managed.ManagedCANDispatcher._dispatch(adapter, message)
+
+    assert sent == messages
+    assert starts[1] - starts[0] == pytest.approx(adapter.SEND_INTERVAL_S)
+    assert backend_starts[1] - backend_starts[0] == pytest.approx(0.00018)
+    # The old backend-boundary assertion would reject this valid 300 us period.
+    assert backend_starts[1] - backend_starts[0] < adapter.SEND_INTERVAL_S * 0.8
 
 
 def test_configuration_writes_complete_while_all_joints_keep_polling(connection):
